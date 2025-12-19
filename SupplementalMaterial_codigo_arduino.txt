@@ -1,0 +1,276 @@
+// ---------------------------------------------------------------
+// Ipog – Instituto de Pós-Graduação
+// Engenharia Civil
+// Laboratório de Física
+// Autor: João F. Nascimento Júnior (alterado por Leandro de Oliveira e 
+Rafael de Sousa Dutra, professores do IFRJ- Campus Paracambi, para fazer 
+a aquisição dos dados de potência elétrica em função do tempo)
+// Data: Nov/2025
+// ---------------------------------------------------------------
+#include <EEPROM.h>
+
+// ---------------------------------------------------------------
+// Declaração de variáveis
+// ---------------------------------------------------------------
+
+String    resposta;   // Usado em confirmações pelo usuário
+String         temp;   // Uso geral
+double            m;   // Massa da bola
+double            h;   // Altura da queda
+double            g;   // Aceleração da gravidade
+double            e;   // Coeficiente de restituição
+double            R;   // Resistência equivalente
+double   area_forca;   // Área no gráfico da força
+double  area_tensao;   // Área no gráfico da tensão
+double     area_pot;   // Área no gráfico da potência
+double      lambida;   // Lâmbida
+double      delta_t;   // Intervalo de tempo entre duas medidas
+boolean    detectou;   // Indica que a colisão iniciou
+boolean  calibragem;   // Indica a medição atual é para calibragem.
+double        t[50];   // 50 medições do tempo.
+double        v[50];   // 50 medições da tensão.
+double        f[50];   // 50 cálculos de força.
+double        p[50];   // 50 cálculos de força. 
+unsigned long tempo;   // Marcação do tempo.
+int         leitura;   // Utilizado apenas na primeira tensão lida
+
+// ---------------------------------------------------------------
+// Rotina executada apenas no início do processamento
+// ---------------------------------------------------------------
+void setup(){
+   Serial.begin(9600); // Baud (comunicação com o computador)
+   g = 9.81;
+   Serial.println("----------------------------------------------");
+   Serial.println("Calibrar o aparelho (S/N) ?");
+   Serial.println("----------------------------------------------");
+
+   resposta = "sSnN";
+   char temp = 'x';
+   while (resposta.indexOf(temp) < 0){
+      while (Serial.available()) {
+         temp = Serial.read();
+      }
+   }
+   if ((temp =='s') || (temp =='S')){
+      calibragem = true;
+   }
+   else {
+      calibragem = false;
+   }
+   recebeParametros();
+   Serial.println("----------------------------------------------");
+   Serial.println("Aguardando soltar a bola ...\n");
+}
+
+// ---------------------------------------------------------------
+// Essa rotina é executada repetidamente indefinidamente
+// ---------------------------------------------------------------
+void loop(){
+   // ----------------------------------------------------------
+   // Fazendo 50 leituras.
+   // Após o primeiro sinal pega os 19 seguintes
+   // ----------------------------------------------------------
+   detectou = false;
+   leitura = analogRead(2);            // Lê a tensão na porta A2
+   if (leitura > 0){                   // Testa se havia tensão ...
+      detectou = true;
+      v[0] = leitura;                  // Armazena a 1a tensão
+      t[0] = 0;                        // Define como t = 0s
+      tempo = micros();                // Zera o tempo. micros()
+                                       // é o contador do sistema
+      for (int i=1; i<50; i = i + 1){
+         v[i] = analogRead(2);         // Lê demais tensões
+         t[i] = micros()-tempo;        // Tempo em microsegundo
+      }
+      for (int i=0; i<50; i = i + 1){
+         v[i] = v[i]/1024.0*5.0;         // [0-1024] <--> [0-5v]
+      }
+   } // Fim do if
+
+   // ----------------------------------------------------------
+   // Se teve sinais processa-os ...
+   // Algumas ações nesse if são executados apenas sob calibragem
+   // e outras em execução normal.
+   // ----------------------------------------------------------
+   if (detectou) {
+      if (calibragem){                       // Quando não for
+         lambida = calculaLambida(m,h);      // calibragem busca
+         gravaLambidaEeprom(lambida);        // o lâmbida na
+      } else {                               // memória eeprom
+         lambida = leLambidaEeprom();
+      }
+      // -------------------------------------------------------
+      // Calculando o vetor de forças e a potência
+      // -------------------------------------------------------
+      for (int i=0; i<50; i = i + 1){
+         f[i] = double(v[i] / lambida);
+      }
+      for (int i=0; i<50; i = i + 1){
+         p[i] = double(v[i]*v[i] / R); 
+      }
+      if (!calibragem){
+         // ------------------------------------------------------
+         // Calcula a área no grafico t x f  e pot x t por integração
+         // -------------------------------------------------------
+         area_forca = 0;
+         for (int i=0; i<49; i = i + 1){
+            delta_t = t[i+1]/1000000 - t[i]/1000000;  // Converte o tempo em s
+            area_forca = area_forca + f[i]*delta_t;
+          }
+         area_pot = 0;
+         for (int i=0; i<49; i = i + 1){
+            delta_t = t[i+1]/1000000 - t[i]/1000000;  // Converte o tempo em s
+            area_pot = area_pot + p[i]*delta_t;
+         }
+         imprimeResultados();
+      }  // fim do if
+      
+      // ---------------------------------------------------------
+      // Limpando os vetores
+      // ---------------------------------------------------------
+      for (int  i=0; i<50; i++){
+         v[i] = 0;
+         t[i] = 0;
+         f[i] = 0;
+         p[i] = 0;
+      }
+      calibragem = false;
+      Serial.println("--------------------------------------------------\n");
+      Serial.println("Aguardando soltar a bola ...\n");
+   }  // fim do "if detectou..."
+}
+
+void recebeParametros(){
+   // -------------------------------------------------------
+   // Recebe o valor da massa via teclado
+   // -------------------------------------------------------
+   Serial.println("Massa (kg) :");
+   temp = "";
+   m = 0;
+   while (m==0){
+      while(Serial.available()) {
+         temp = Serial.readString();
+      }
+      m = temp.toFloat();
+   }
+
+   // -------------------------------------------------------
+   // Recebe o valor da altura via teclado
+   // -------------------------------------------------------
+   Serial.println("Altura da queda (m) :");
+   temp = "";
+   h = 0;
+   while (h==0){
+      while(Serial.available()) {
+         temp = Serial.readString();
+      }
+      h = temp.toFloat();
+   }
+   // -------------------------------------------------------
+   // Recebe o coeficiente de restituicao via teclado
+   // -------------------------------------------------------
+   Serial.println("Coeficiente de restituição (e) :");
+   temp = "";
+   e = 0;
+   while (e==0){
+      while(Serial.available()) {
+         temp = Serial.readString();
+      }
+      e = temp.toFloat();
+   }
+    // -------------------------------------------------------
+   // Recebe o valor da resistência via teclado
+   // -------------------------------------------------------
+   Serial.println("Resistência (Ohm) :");
+   temp = "";
+   R = 0;
+   while (R==0){
+      while(Serial.available()) {
+         temp = Serial.readString();
+      }
+      R = temp.toFloat();
+   }
+
+}
+
+double leLambidaEeprom(){
+   double val;
+   EEPROM.get(0, val);
+   return val;
+}
+
+void gravaLambidaEeprom(double lambida){
+   Serial.print("Lâmbida=");
+   Serial.println(lambida,8);
+   Serial.println("\nGravando Lâmbida na EEPROM...\n");
+   EEPROM.put(0, lambida);
+   delay(2000);
+}
+
+double calculaLambida(double m, double h){
+   double lambida;
+   // -------------------------------------------------------
+   // Calcula a área no grafico t x f (método teorico)
+   // -------------------------------------------------------
+   area_forca = m*sqrt(2*g*h)*(1+e);
+  
+   // ------------------------------------------------------
+   // Calcula a área nos grafico t x v e t x pot
+   // -------------------------------------------------------
+   area_tensao = 0;
+   for (int i=0; i<49; i = i + 1){
+      delta_t = t[i+1]/1000000 - t[i]/1000000;  // Converte o tempo em s
+      area_tensao = area_tensao + v[i]*delta_t;
+   }
+      // -------------------------------------------------------
+   // Calcula e salva Lâmbida
+   // -------------------------------------------------------
+   lambida = area_tensao / area_forca;
+    Serial.println("Calibragem realizada.");
+   return (lambida);
+}
+
+
+void imprimeResultados(){
+   // -------------------------------------------------------
+   // Imprimindo resultados
+   // -------------------------------------------------------
+   Serial.println("\n----------------------------------------------");
+   Serial.print("Massa da bola.(kg)...........= \t");
+   Serial.println(m, 6);
+   Serial.print("Altura da queda.(m)..........= \t");
+   Serial.println(h, 6);
+   Serial.print("Coeficiente de restituição..= \t");
+   Serial.println(e, 6);
+   Serial.print("Resistência. (Ohm)..........= \t");
+   Serial.println(R, 6);
+   Serial.print("Área no gráfico da Força.....= \t");
+   Serial.println(area_forca, 8);
+   Serial.print("Área do gráfico da potencia..= \t");
+   Serial.println(area_pot, 16);
+   Serial.print("Lâmbida .....................= \t");
+   Serial.println(lambida, 8);
+   Serial.println("--------------------------------------------------");
+   Serial.print("Tempo (μs)");
+   Serial.print("\t");          // Tabulação
+   Serial.println("Força (N)");
+   Serial.print("\t");
+   Serial.println("Tensão (volts)");
+   Serial.print("\t");
+   Serial.println("Potência (W)");
+   Serial.println("--------------------------------------------------");
+
+   for (int i=0; i<50; i = i + 1){
+      Serial.print(t[i],0);        // Envia para a console
+      Serial.print("\t"); 
+      Serial.print(f[i],10);
+      Serial.print("\t");
+      Serial.print(v[i],10);
+      Serial.print("\t");
+      Serial.println(p[i],10);
+      //Serial.print("\t"); 
+
+
+   }
+
+}
